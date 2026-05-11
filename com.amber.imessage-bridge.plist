@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd plist for the Amber iMessage bridge.
+
+  Install:
+    cp com.amber.imessage-bridge.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.amber.imessage-bridge.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.amber.imessage-bridge.plist
+
+  Replace PLACEHOLDER paths below before installing.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.amber.imessage-bridge</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/node</string>
+        <string>/REPLACE/WITH/ABSOLUTE/PATH/imessage-bridge/bridge.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/REPLACE/WITH/ABSOLUTE/PATH/imessage-bridge</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/amber-imessage-bridge.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/amber-imessage-bridge.err.log</string>
+</dict>
+</plist>
