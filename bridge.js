@@ -124,7 +124,8 @@ function handleWatchLine(line) {
   // imsg's JSON output uses keys like `text`, `from`, `chat`, `isFromMe`.
   const text = obj.text ?? obj.body ?? obj.message?.text ?? null;
   const fromMe =
-    obj.isFromMe ?? obj.fromMe ?? obj.from_me ?? obj.message?.isFromMe ?? false;
+    obj.isFromMe ?? obj.fromMe ?? obj.from_me ?? obj.is_from_me ??
+    obj.message?.isFromMe ?? obj.message?.is_from_me ?? false;
 
   // Sender handle: phone or email of the message originator.
   const from =
@@ -146,6 +147,12 @@ function handleWatchLine(line) {
   // Only forward inbound text-message events.
   if (fromMe === true) return;
   if (!text || !from) return;
+
+  // Belt and suspenders: if the sender handle matches our own bridge handle,
+  // it can't be an inbound message — drop it. This prevents echo loops if a
+  // future imsg release renames the is_from_me field again.
+  const selfHandle = (process.env.IMSG_FROM || '').trim().toLowerCase();
+  if (selfHandle && String(from).trim().toLowerCase() === selfHandle) return;
 
   forwardToAmber({
     event_id: String(eventId),
