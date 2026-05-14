@@ -25,6 +25,9 @@ const express = require('express');
 const { spawn, execFile } = require('child_process');
 const fetch = require('node-fetch');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 const PORT = parseInt(process.env.BRIDGE_PORT || '4720', 10);
 const TOKEN = process.env.BRIDGE_TOKEN;
@@ -69,6 +72,93 @@ app.post('/send', requireToken, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ── Auto-add senders to Contacts ────────────────────────────────────────────
+//
+// iMessage's "Share Name and Photo" only has Ask / Contacts-only. To get auto
+// sharing, set the Messages setting to Contacts-only and ensure every sender
+// is in the Mac's Contacts. We do that here: once per new handle, drop an
+// entry into Contacts with the handle as both display name and email/phone.
+//
+// Permission note: the first run will prompt macOS for Contacts access for
+// whatever shell launched bridge.js (Terminal, iTerm, tmux, etc). Approve it
+// in System Settings → Privacy & Security → Contacts.
+
+const KNOWN_HANDLES_FILE = path.join(
+  process.env.AMBER_BRIDGE_STATE_DIR || path.join(os.homedir(), '.amber-bridge'),
+  'known-handles.json',
+);
+const KNOWN_HANDLES = new Set();
+
+function loadKnownHandles() {
+  try {
+    const raw = fs.readFileSync(KNOWN_HANDLES_FILE, 'utf8');
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr)) arr.forEach((h) => KNOWN_HANDLES.add(h));
+  } catch {
+    // missing/empty/corrupt — fine, start fresh
+  }
+}
+
+function persistKnownHandles() {
+  try {
+    fs.mkdirSync(path.dirname(KNOWN_HANDLES_FILE), { recursive: true });
+    fs.writeFileSync(
+      KNOWN_HANDLES_FILE,
+      JSON.stringify([...KNOWN_HANDLES]),
+      'utf8',
+    );
+  } catch (err) {
+    console.error('[contacts] persist failed:', err.message);
+  }
+}
+
+function isPhoneHandle(handle) {
+  // Apple writes phone handles as E.164 (e.g. +15551234567).
+  return /^\+?\d[\d\s\-()]*$/.test(handle);
+}
+
+function ensureContact(rawHandle) {
+  const handle = String(rawHandle || '').trim();
+  if (!handle) return;
+  if (KNOWN_HANDLES.has(handle)) return;
+  // Mark optimistically so concurrent inbound messages don't queue up
+  // multiple osascript runs for the same person.
+  KNOWN_HANDLES.add(handle);
+  persistKnownHandles();
+
+  const phone = isPhoneHandle(handle);
+  // AppleScript string escaping: backslash + double-quote only.
+  const esc = (s) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const value = esc(handle);
+  const propType = phone ? 'phone' : 'email';
+  const propLabel = phone ? 'mobile' : 'iMessage';
+
+  // Display name: keep it identifiable in Contacts. iMessage only needs the
+  // handle to match — the name doesn't matter for Share Name/Photo.
+  const displayName = `iMessage ${handle}`;
+  const escName = esc(displayName);
+
+  const script = `
+    tell application "Contacts"
+      set newPerson to make new person with properties {first name:"${escName}"}
+      make new ${propType} at end of ${propType}s of newPerson with properties {label:"${propLabel}", value:"${value}"}
+      save
+    end tell
+  `;
+
+  execFile('osascript', ['-e', script], { timeout: 10000 }, (err, _stdout, stderr) => {
+    if (err) {
+      const msg = stderr?.toString().trim() || err.message;
+      console.error(`[contacts] add failed for ${handle}: ${msg}`);
+      // Allow a retry on the next message from this sender.
+      KNOWN_HANDLES.delete(handle);
+      persistKnownHandles();
+    } else {
+      console.log(`[contacts] added ${handle}`);
+    }
+  });
+}
 
 function runImsg(args) {
   return new Promise((resolve, reject) => {
@@ -154,9 +244,15 @@ function handleWatchLine(line) {
   const selfHandle = (process.env.IMSG_FROM || '').trim().toLowerCase();
   if (selfHandle && String(from).trim().toLowerCase() === selfHandle) return;
 
+  const senderHandle = String(from).trim();
+
+  // Fire-and-forget: make sure this sender exists in Mac Contacts so the
+  // iMessage "Share Name and Photo" auto-share (Contacts-only mode) works.
+  ensureContact(senderHandle);
+
   forwardToAmber({
     event_id: String(eventId),
-    from: String(from).trim(),
+    from: senderHandle,
     text: String(text),
     received_at: new Date().toISOString(),
   });
@@ -187,6 +283,7 @@ async function forwardToAmber(payload) {
 }
 
 // ── Boot ────────────────────────────────────────────────────────────────────
+loadKnownHandles();
 app.listen(PORT, () => {
   console.log(`Amber iMessage bridge listening on :${PORT}`);
   startWatcher();
