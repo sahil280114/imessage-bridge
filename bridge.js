@@ -20,7 +20,12 @@
 //   Outbound (Amber → bridge):  Authorization: Bearer <BRIDGE_TOKEN>
 //   Inbound  (bridge → Amber):  Authorization: Bearer <BRIDGE_TOKEN>
 
-require('dotenv').config();
+// Load .env from an absolute path anchored to THIS file, not the process's
+// working directory. Under launchd the cwd is unpredictable, so a bare
+// dotenv.config() can silently fail to find .env — which flushes every config
+// var (including the self-echo guard) and is exactly what triggered the
+// self-messaging loop after a Mac restart.
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 const express = require('express');
 const { spawn, execFile } = require('child_process');
 const fetch = require('node-fetch');
@@ -35,6 +40,39 @@ const WEBHOOK_URL = process.env.AMBER_WEBHOOK_URL;
 const IMSG_BIN = process.env.IMSG_BIN || 'imsg';
 const WATCH_ARGS = (process.env.IMSG_WATCH_ARGS || '--json').split(/\s+/).filter(Boolean);
 
+// ── Self-handle guard ───────────────────────────────────────────────────────
+// ALL of Amber's own iMessage handles — email(s) AND phone number(s). Any
+// message whose sender is one of these is Amber talking to itself and must
+// never be forwarded (echo-loop prevention). Set SELF_HANDLES to a
+// comma-separated list; IMSG_FROM is folded in for back-compat.
+function normalizeHandle(h) {
+  const s = String(h || '').trim().toLowerCase();
+  if (!s) return '';
+  if (s.includes('@')) return s; // email — compare as-is
+  const digits = s.replace(/[^0-9]/g, ''); // phone — compare by digits
+  // Use the last 10 digits so +1 (555) 123-4567 == +15551234567 == 5551234567.
+  return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+// Hardcoded baseline — ALL of Amber's own iMessage handles. Kept in code (not
+// only .env) so the self-echo guard is ALWAYS active even if .env fails to load
+// after a restart. Add every alias Messages can be reached at: email + phone.
+const HARDCODED_SELF_HANDLES = [
+  'kuhu@ambermind.ai',
+  // TODO: add Amber's iMessage phone number in E.164, e.g. '+15551234567'
+];
+const SELF_HANDLES = new Set(
+  [...HARDCODED_SELF_HANDLES, process.env.SELF_HANDLES, process.env.IMSG_FROM]
+    .filter(Boolean)
+    .join(',')
+    .split(',')
+    .map(normalizeHandle)
+    .filter(Boolean)
+);
+function isSelfHandle(h) {
+  const n = normalizeHandle(h);
+  return !!n && SELF_HANDLES.has(n);
+}
+
 if (!TOKEN) {
   console.error('BRIDGE_TOKEN is required. Set it in .env.');
   process.exit(1);
@@ -42,6 +80,9 @@ if (!TOKEN) {
 if (!WEBHOOK_URL) {
   console.warn('AMBER_WEBHOOK_URL not set — inbound events will only be logged.');
 }
+// The hardcoded baseline guarantees this is never empty, so the guard is always
+// on — even if .env fails to load after a restart (which triggered the loop).
+console.log(`[watch] self-echo guard active for ${SELF_HANDLES.size} handle(s): ${[...SELF_HANDLES].join(', ')}`);
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -238,11 +279,24 @@ function handleWatchLine(line) {
   if (fromMe === true) return;
   if (!text || !from) return;
 
-  // Belt and suspenders: if the sender handle matches our own bridge handle,
-  // it can't be an inbound message — drop it. This prevents echo loops if a
-  // future imsg release renames the is_from_me field again.
-  const selfHandle = (process.env.IMSG_FROM || '').trim().toLowerCase();
-  if (selfHandle && String(from).trim().toLowerCase() === selfHandle) return;
+  // Belt and suspenders: if the sender is one of OUR OWN handles, it can't be a
+  // real inbound message — drop it. This is what prevents self-echo loops when
+  // Amber ends up in a thread with its own address: the self-message can arrive
+  // on a different alias than it was sent from (email vs phone), marked
+  // is_from_me=false, so we must match against ALL of Amber's handles, not one.
+  if (isSelfHandle(from)) {
+    console.log(`[watch] dropping self-addressed message from ${from}`);
+    return;
+  }
+  // Alias-agnostic self-thread guard: if the sender equals the handle this Mac
+  // RECEIVED on (destination_caller_id), it's Amber talking to Amber — drop it,
+  // no matter which handle that is. This catches the loop even if a specific
+  // alias isn't in HARDCODED_SELF_HANDLES.
+  const dest = obj.destination_caller_id ?? obj.chat_identifier ?? obj.chat?.identifier ?? null;
+  if (dest && normalizeHandle(dest) === normalizeHandle(from)) {
+    console.log('[watch] dropping self-thread message (sender == destination)');
+    return;
+  }
 
   const senderHandle = String(from).trim();
 
