@@ -20,12 +20,35 @@
 //   Outbound (Amber → bridge):  Authorization: Bearer <BRIDGE_TOKEN>
 //   Inbound  (bridge → Amber):  Authorization: Bearer <BRIDGE_TOKEN>
 
-// Load .env from an absolute path anchored to THIS file, not the process's
-// working directory. Under launchd the cwd is unpredictable, so a bare
-// dotenv.config() can silently fail to find .env — which flushes every config
-// var (including the self-echo guard) and is exactly what triggered the
-// self-messaging loop after a Mac restart.
-require('dotenv').config({ path: require('path').join(__dirname, '.env') });
+// Load .env from an ABSOLUTE path, never the process cwd. Under launchd the cwd
+// is unpredictable, so a bare dotenv.config() can silently fail to find .env —
+// which flushes every config var (including the self-echo guard) and is exactly
+// what triggered the self-messaging loop after a Mac restart. We try a few
+// well-known absolute locations and load the first that exists, so wherever you
+// keep the file among these it's found regardless of how the bridge is started:
+//   1. $BRIDGE_ENV_PATH        explicit override (e.g. set in the launchd plist)
+//   2. ~/.amber-bridge/.env    the bridge's persistent state dir
+//   3. <script dir>/.env       next to bridge.js
+//   4. <script dir>/../.env    one level up (repo root)
+(function loadEnv() {
+  const p = require('path');
+  const fs = require('fs');
+  const os = require('os');
+  const candidates = [
+    process.env.BRIDGE_ENV_PATH,
+    p.join(os.homedir(), '.amber-bridge', '.env'),
+    p.join(__dirname, '.env'),
+    p.join(__dirname, '..', '.env'),
+  ].filter(Boolean);
+  for (const path of candidates) {
+    if (fs.existsSync(path)) {
+      require('dotenv').config({ path });
+      console.log(`[env] loaded ${path}`);
+      return;
+    }
+  }
+  console.warn(`[env] no .env found in: ${candidates.join(', ')} — using hardcoded/shell values only`);
+})();
 const express = require('express');
 const { spawn, execFile } = require('child_process');
 const fetch = require('node-fetch');
