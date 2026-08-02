@@ -81,7 +81,7 @@ function normalizeHandle(h) {
 // after a restart. Add every alias Messages can be reached at: email + phone.
 const HARDCODED_SELF_HANDLES = [
   'kuhu@ambermind.ai',
-  // TODO: add Amber's iMessage phone number in E.164, e.g. '+15551234567'
+  '+13024423875',
 ];
 const SELF_HANDLES = new Set(
   [...HARDCODED_SELF_HANDLES, process.env.SELF_HANDLES, process.env.IMSG_FROM]
